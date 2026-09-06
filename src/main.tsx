@@ -21,6 +21,7 @@ import { reportPerformance } from './services/telemetry';
 import { installGlobalErrorReporting } from './services/errorReport';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SpeedInsights } from '@vercel/speed-insights/react';
+import { Analytics } from '@vercel/analytics/react';
 
 // Global styles
 const style = document.createElement('style');
@@ -64,5 +65,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <App />
     </ErrorBoundary>
     {import.meta.env.VITE_SPEED_INSIGHTS !== 'false' && <SpeedInsights />}
+    <Analytics />
   </React.StrictMode>,
 );
