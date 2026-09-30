@@ -7,7 +7,13 @@ import {
 } from '../utils/majorOwnership';
 import type { MajorExam } from '../types';
 import { getAppSettings, updateExamSettings } from '../utils/appSettings';
-import { adminCan, getCloudSnapshot, saveExamsToServer, takeGeneratedRecoveryKey } from '../services/examService';
+import {
+  adminCan,
+  fetchExamsFromServer,
+  getCloudSnapshot,
+  saveExamsToServer,
+  takeGeneratedRecoveryKey,
+} from '../services/examService';
 import { clearPendingExamSync, getPendingExamSync } from '../services/examOutbox';
 import AdminDeviceSetupPrompt from '../components/AdminDeviceSetupPrompt';
 import InitializationWizard, {
@@ -661,7 +667,9 @@ export default function AdminPage() {
   useEffect(() => {
     if (!ready || !adminUser || adminTab !== 'exam' || !route.examView) return;
     if (!availableExamViews.includes(route.examView)) {
-      navigate(adminSectionUrl({ tab: 'exam', view: availableExamViews[0], search: location.search }), { replace: true });
+      navigate(adminSectionUrl({ tab: 'exam', view: availableExamViews[0], search: location.search }), {
+        replace: true,
+      });
     }
   }, [ready, adminUser, adminTab, route.examView, availableExamViews, navigate, location.search]);
 
@@ -699,7 +707,10 @@ export default function AdminPage() {
   const canQuickPublish = can('major.create') || can('major.quick_create');
   const canEditExamRecord = (record: { source: 'regular' | 'quick'; createdBy: number | null }) =>
     can('major.edit') ||
-    (can('major.quick_create') && record.source === 'quick' && record.createdBy != null && record.createdBy === adminUser?.id);
+    (can('major.quick_create') &&
+      record.source === 'quick' &&
+      record.createdBy != null &&
+      record.createdBy === adminUser?.id);
   // 考试中心的内部板块：前三个是同一份列表的三个口径，weekly/editor 复用现有面板。
   const selectExamView = (view: ExamCenterView) => {
     setDeniedModule('');
@@ -794,12 +805,33 @@ export default function AdminPage() {
     resumeMajorWizard();
   };
   /**
+   * 复制/记录动作走的是记录接口，完成后记录列表会先更新，而后台编辑器使用的 majors 快照
+   * 可能还没收到同一轮云端同步。编辑或删除刚复制的草稿前按需强制读一次，避免把「尚未回灌」
+   * 误报成「考试已丢失」。
+   */
+  const refreshMajorSnapshot = async (): Promise<MajorExam[] | null> => {
+    const remote = await fetchExamsFromServer(undefined, { fresh: true });
+    if (!remote) return null;
+    const nextActiveMajorId = remote.activeMajorId || remote.majors[0]?.id || '';
+    syncMajorStateRef(stateRef, remote.majors, nextActiveMajorId);
+    setMajors(remote.majors);
+    setActiveMajorId(nextActiveMajorId);
+    setEditingMajorId((current) => (remote.majors.some((item) => item.id === current) ? current : nextActiveMajorId));
+    updateExamSettings({ majors: remote.majors, activeMajorId: nextActiveMajorId, updatedAt: remote.updatedAt });
+    return remote.majors;
+  };
+
+  /**
    * 删除一条草稿。入口在考试安排的草稿行与草稿详情抽屉里——以前只有「关向导时空草稿丢弃」
    * 这一条删除路径，草稿一旦留下就只能发布或一直躺着（dev 上积的那几条就是这么来的）。
    * 删除只动快照里的这场考试并推送，教室端不受影响（草稿还没发布）。
    */
   const discardExamDraft = async (record: ExamRecordListEntry): Promise<boolean> => {
-    const draft = majors.find((item) => item.id === record.id);
+    let draft = majors.find((item) => item.id === record.id);
+    if (!draft) {
+      const refreshed = await refreshMajorSnapshot();
+      draft = refreshed?.find((item) => item.id === record.id);
+    }
     if (!draft) {
       notify('warning', `「${record.name || record.id}」已不在本地考试数据里，刷新列表后再试。`, '找不到这场草稿');
       return false;
@@ -929,13 +961,26 @@ export default function AdminPage() {
   // 详情抽屉的「编辑考试」：先定位到那一场（必要时把年级切过去），再进编辑器。
   // 编辑器展示的是「当前年级范围内按 editingMajorId 命中的那一场」，少了定位这一步，
   // 用户点开的就是当前范围的第一场——也就是巡检里反馈过的「这根本不是我点的那场考试」。
-  const openExamRecordEditor = (recordId: string, recordName = '') => {
-    const target = resolveExamEditTarget({
-      majors,
+  const openExamRecordEditor = async (recordId: string, recordName = '') => {
+    let editMajors = majors;
+    let target = resolveExamEditTarget({
+      majors: editMajors,
       recordId,
       currentGradeId: selectedGradeId,
       classes: visibleClasses,
     });
+    if (!target) {
+      const refreshed = await refreshMajorSnapshot();
+      if (refreshed) {
+        editMajors = refreshed;
+        target = resolveExamEditTarget({
+          majors: editMajors,
+          recordId,
+          currentGradeId: selectedGradeId,
+          classes: visibleClasses,
+        });
+      }
+    }
     if (!target) {
       notify(
         'warning',
@@ -1275,9 +1320,12 @@ export default function AdminPage() {
                   weeklyPlans={visibleWeeklyPlans}
                   weeklyPlanIdByClassId={activeWeeklyPlanIdByClassId}
                   onOpenWeeklyEditor={can('weekly.read') ? () => selectExamView('weekly') : undefined}
-                  onEditRecord={canEditExamRecord({ source: 'quick', createdBy: adminUser?.id ?? null })
-                    ? (record) => (canEditExamRecord(record) ? openExamRecordEditor(record.id, record.name) : undefined)
-                    : undefined}
+                  onEditRecord={
+                    canEditExamRecord({ source: 'quick', createdBy: adminUser?.id ?? null })
+                      ? (record) =>
+                          canEditExamRecord(record) ? openExamRecordEditor(record.id, record.name) : undefined
+                      : undefined
+                  }
                   canEditRecord={canEditExamRecord}
                   onDeleteDraft={can('major.delete') ? discardExamDraft : undefined}
                   scheduleRevision={examScheduleRevision}
