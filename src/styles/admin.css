@@ -6556,8 +6556,15 @@
   }
   .class-management__row {
     grid-template-columns: auto minmax(0, 1fr) auto;
-    grid-template-areas: 'check main track' '. actions actions';
+    grid-template-areas: 'check main track' 'check main actions';
     padding: 13px 12px;
+  }
+  .class-management__row--readonly {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: 'main track';
+  }
+  .class-management__row .class-management__delete {
+    justify-self: end;
   }
   .class-management__track-tag {
     max-width: 76px;
