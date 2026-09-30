@@ -1028,7 +1028,9 @@ export default function AdminPage() {
     draftCreated: wizardDraftCreated,
     draftId: wizardDraftId,
     draftExists: Boolean(wizardDraft),
-    modalOpen: Boolean(majorModal),
+    // 左侧“设置”打开的是重命名弹窗，不应隐藏创建流程的回程入口。
+    // 只有创建向导本身打开时才让提示条让位，避免用户无法继续到确认步骤。
+    modalOpen: majorModal?.mode === 'add',
     tabIsExam: adminTab === 'exam',
   });
   /**
