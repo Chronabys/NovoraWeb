@@ -130,6 +130,9 @@ function ScheduleRowView({
       </button>
       {open && (
         <div className="exam-schedule__detail">
+          <div className={`exam-schedule__detail-status is-${row.status}`}>
+            {SCHEDULE_ROW_STATUS_LABELS[row.status]}
+          </div>
           {daySubjects.length === 0 ? (
             <p className="exam-schedule__detail-empty">
               {row.kind === 'weekly'

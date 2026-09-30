@@ -18,7 +18,7 @@ import type { ScheduleWindowKey } from './examListFilterMemory';
 
 export type ScheduleRowKind = 'major' | 'quick' | 'weekly' | 'draft';
 
-export type ScheduleRowStatus = 'draft' | 'scheduled' | 'imminent' | 'ongoing' | 'ended' | 'suppressed';
+export type ScheduleRowStatus = 'draft' | 'scheduled' | 'imminent' | 'ongoing' | 'paused' | 'ended' | 'suppressed';
 
 export type ScheduleRow = {
   key: string;
@@ -36,6 +36,8 @@ export type ScheduleRow = {
   classIds: string[];
   startAt: number | null;
   endAt: number | null;
+  pausedAt?: number | null;
+  pausedMs?: number;
   itemCount: number;
   /** 未排期：草稿（未发布）与「已发布但没有任何科目时间」都归到「未排期」分组。 */
   unscheduled: boolean;
@@ -86,6 +88,8 @@ export type ScheduleRecordLike = {
   itemCount: number;
   startAt: number | null;
   endAt: number | null;
+  pausedAt?: number | null;
+  pausedMs?: number;
   targetGradeIds: string[];
   targetClassIds: string[];
   source: 'regular' | 'quick';
@@ -118,6 +122,7 @@ export const SCHEDULE_ROW_STATUS_LABELS: Record<ScheduleRowStatus, string> = {
   scheduled: '待开始',
   imminent: '即将开始',
   ongoing: '进行中',
+  paused: '已暂停',
   ended: '已结束',
   suppressed: '已被大型考试暂停',
 };
@@ -203,14 +208,17 @@ function statusFromRecord(
   displayStatus: ExamRecordDisplayStatus,
   startAt: number | null,
   endAt: number | null,
+  pausedAt: number | null | undefined,
+  pausedMs: number | undefined,
   now: number,
 ): ScheduleRowStatus {
   if (displayStatus === 'draft') return 'draft';
-  if (displayStatus === 'ongoing') return 'ongoing';
   if (displayStatus === 'ended' || displayStatus === 'archived') return 'ended';
+  if (displayStatus === 'ongoing') return pausedAt != null ? 'paused' : 'ongoing';
   // published：再按时间细分出「即将开始」，让近场更醒目。
-  const byTime = timeStatusOf(startAt, endAt, now);
-  return byTime === 'ongoing' ? 'scheduled' : byTime;
+  const effectiveEndAt = endAt == null ? null : endAt + Math.max(0, pausedMs ?? 0);
+  const byTime = timeStatusOf(startAt, effectiveEndAt, now);
+  return byTime;
 }
 
 function sessionToRow(
@@ -224,7 +232,7 @@ function sessionToRow(
   const status: ScheduleRowStatus = suppressed
     ? 'suppressed'
     : record
-      ? statusFromRecord(record.displayStatus, session.startAt, session.endAt, now)
+      ? statusFromRecord(record.displayStatus, session.startAt, session.endAt, record.pausedAt, record.pausedMs, now)
       : timeStatusOf(session.startAt, session.endAt, now);
   return {
     key: session.key,
@@ -239,6 +247,8 @@ function sessionToRow(
     classIds: session.scope.classIds,
     startAt: session.startAt,
     endAt: session.endAt,
+    pausedAt: record?.pausedAt ?? session.pausedAt,
+    pausedMs: record?.pausedMs ?? session.pausedMs,
     itemCount: record?.itemCount ?? 0,
     unscheduled: false,
     daySubjectCount: 1,
@@ -392,7 +402,7 @@ export function buildScheduleBoard(input: BuildScheduleBoardInput): {
     .map((record) => ({
       key: `unscheduled|${record.id}`,
       kind: record.source === 'quick' ? 'quick' : 'major',
-      status: statusFromRecord(record.displayStatus, record.startAt, record.endAt, now),
+      status: statusFromRecord(record.displayStatus, record.startAt, record.endAt, record.pausedAt, record.pausedMs, now),
       recordId: record.id,
       planId: null,
       title: record.name,
@@ -402,6 +412,8 @@ export function buildScheduleBoard(input: BuildScheduleBoardInput): {
       classIds: record.targetClassIds,
       startAt: null,
       endAt: null,
+      pausedAt: record.pausedAt,
+      pausedMs: record.pausedMs,
       itemCount: record.itemCount,
       unscheduled: true,
       daySubjectCount: record.itemCount,

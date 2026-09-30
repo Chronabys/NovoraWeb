@@ -146,6 +146,17 @@ test('状态：记录层状态优先于时间推断', () => {
   );
 });
 
+test('状态：已发布考试手动调整时间后按最新时间窗口即时重算', () => {
+  const board = buildScheduleBoard({
+    sessions: [session({ key: 'manual-time', startAt: at('10:00'), endAt: at('11:00') })],
+    records: [record({ id: 'm1', displayStatus: 'published', startAt: at('10:00'), endAt: at('11:00') })],
+    grades,
+    classes,
+    now: at('10:30'),
+  });
+  assert.equal(board.rows[0]?.status, 'ongoing');
+});
+
 test('被大型考试暂停的周测：单独一行、标暂停、不参与冲突', () => {
   const suppressed = session({
     key: 'weekly|sig|0',

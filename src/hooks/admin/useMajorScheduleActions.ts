@@ -69,6 +69,8 @@ export function useMajorScheduleActions(params: {
   saveTimer: MutableRefObject<ReturnType<typeof setTimeout> | null>;
   stateRef: MutableRefObject<{ majors: MajorExam[]; activeMajorId: string }>;
   setSync: (state: SyncState) => void;
+  /** 通知考试安排页：本地编辑已变更，或云端保存已确认。 */
+  onScheduleChanged?: (phase: 'local' | 'saved') => void;
   editingRef: MutableRefObject<{ name: string } | null>;
   setEditingRef: MutableRefObject<(value: unknown) => void>;
 }) {
@@ -93,6 +95,7 @@ export function useMajorScheduleActions(params: {
     saveTimer,
     stateRef,
     setSync,
+    onScheduleChanged,
     editingRef,
     setEditingRef,
   } = params;
@@ -336,6 +339,7 @@ export function useMajorScheduleActions(params: {
           syncMajorStateRef(stateRef, mergedMajors, mergedActiveMajorId);
           setMajors(mergedMajors);
           setActiveMajorId(mergedActiveMajorId);
+          onScheduleChanged?.('local');
           updateExamSettings({
             ...normalizedMergedExam,
             updatedAt: result.remote.updatedAt,
@@ -412,12 +416,13 @@ export function useMajorScheduleActions(params: {
         });
         if (pAlerts) updateAlertsSettings({ ...pAlerts, updatedAt: result });
         setSync('saved');
+        onScheduleChanged?.('saved');
         if (totalConflicts)
           notify('warning', `已合并本机与云端修改；${totalConflicts} 个同字段冲突保留本机值。`, '数据冲突已处理');
         return;
       }
     },
-    [buildPayload, navigate, pendingRef, setAlerts, setSync, stateRef, weeklyStateRef],
+    [buildPayload, navigate, onScheduleChanged, pendingRef, setAlerts, setSync, stateRef, weeklyStateRef],
   );
 
   const pushToServer = useCallback(
@@ -434,6 +439,7 @@ export function useMajorScheduleActions(params: {
       syncMajorStateRef(stateRef, ms, activeId);
       setMajors(ms);
       setActiveMajorId(activeId);
+      onScheduleChanged?.('local');
       const now = Date.now();
       const { alerts: pAlerts, ...examPayload } = buildPayload(ms, activeId);
       updateExamSettings({
@@ -458,7 +464,7 @@ export function useMajorScheduleActions(params: {
         void pushToServer(ms, activeId, syncLabel);
       }, 650);
     },
-    [buildPayload, pendingRef, pushToServer, saveTimer, setSync, stateRef],
+    [buildPayload, onScheduleChanged, pendingRef, pushToServer, saveTimer, setSync, stateRef],
   );
 
   const commitItems = useCallback(

@@ -153,6 +153,10 @@ export default function AdminPage() {
 
   // ---- 云同步基础状态（多个领域 Hook 都需要写入，故不归属单个 Hook）----
   const [sync, setSync] = useState<SyncState>('loading');
+  const [examScheduleRevision, setExamScheduleRevision] = useState(0);
+  const handleExamScheduleChanged = useCallback((phase: 'local' | 'saved') => {
+    if (phase === 'saved') setExamScheduleRevision((value) => value + 1);
+  }, []);
   const [cloudReadConfirmed, setCloudReadConfirmed] = useState(false);
   const [online, setOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [recoveryConfigured, setRecoveryConfigured] = useState<boolean | null>(null);
@@ -328,6 +332,7 @@ export default function AdminPage() {
     saveTimer,
     stateRef,
     setSync,
+    onScheduleChanged: handleExamScheduleChanged,
     editingRef,
     setEditingRef,
   });
@@ -1231,6 +1236,7 @@ export default function AdminPage() {
                     can('major.edit') ? (record) => openExamRecordEditor(record.id, record.name) : undefined
                   }
                   onDeleteDraft={can('major.delete') ? discardExamDraft : undefined}
+                  scheduleRevision={examScheduleRevision}
                   // 「考试安排」日程轴：本地快照 + 周测规则，用来展开场次、抑制冲突、列出科目。
                   majors={visibleMajors}
                   scheduleMode={scheduleMode}

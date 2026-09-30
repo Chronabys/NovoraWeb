@@ -11,6 +11,7 @@ import {
 import { CalendarClock, ChevronLeft, ChevronRight, ClipboardList, Plus, Search } from 'lucide-react';
 import type { SchoolClass, SchoolGrade } from '../types/school';
 import type { MajorExam } from '../types';
+import type { ExamRecordDisplayStatus } from '../shared/examRecordContracts.js';
 import {
   fetchExamRecord,
   fetchExamRecords,
@@ -76,6 +77,8 @@ type Props = {
   onEditRecord?: (record: ExamRecordListEntry) => void;
   /** 删除草稿：返回 true 表示确实删了（面板据此立刻重拉草稿列表）。 */
   onDeleteDraft?: (record: ExamRecordListEntry) => Promise<boolean>;
+  /** 编辑器云端保存确认后的版本号；变化时按当前筛选条件重新取列表。 */
+  scheduleRevision?: number;
   /** 「考试安排」日程轴：本地快照 + 周测规则，用来展开场次、抑制冲突并列出科目。 */
   majors?: MajorExam[];
   scheduleMode?: ScheduleMode;
@@ -149,6 +152,18 @@ function weeklyDateLabel(dateKey: string, now: number): string {
   return dateKey.slice(5);
 }
 
+function displayStatusOf(record: ExamRecordListEntry, major: MajorExam | undefined, now: number): ExamRecordDisplayStatus {
+  if (record.displayStatus === 'draft' || record.displayStatus === 'ended' || record.displayStatus === 'archived') {
+    return record.displayStatus;
+  }
+  const startAt = major?.startAt ?? record.startAt;
+  const endAt = (major?.endAt ?? record.endAt) == null ? null : (major?.endAt ?? record.endAt)! + (record.pausedMs ?? 0);
+  if (record.pausedAt != null) return 'ongoing';
+  if (startAt != null && endAt != null && now >= endAt) return 'ended';
+  if (startAt != null && now >= startAt) return 'ongoing';
+  return 'published';
+}
+
 export default function ExamRecordsPanel({
   grades,
   classes,
@@ -160,6 +175,7 @@ export default function ExamRecordsPanel({
   onOpenWeeklyEditor,
   onEditRecord,
   onDeleteDraft,
+  scheduleRevision = 0,
   majors,
   scheduleMode,
   weeklyConflictPolicy,
@@ -196,6 +212,13 @@ export default function ExamRecordsPanel({
   const [scheduleWindow, setScheduleWindow] = useState<ScheduleWindowKey>(rememberedFilters?.scheduleWindow ?? 'week');
   const [expandedClassId, setExpandedClassId] = useState('');
   const [weeklyExpanded, setWeeklyExpanded] = useState(false);
+  // 状态胶囊是时间派生值：编辑保存之外，跨过开考/结束/即将开始边界也必须即时重算。
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (preset !== 'schedule' && preset !== 'current') return;
+    const timer = globalThis.setInterval(() => setNow(Date.now()), 1_000);
+    return () => globalThis.clearInterval(timer);
+  }, [preset]);
 
   /**
    * 父级（AdminPage）每 10 秒重渲染一次，`visibleClasses` 这类派生数组每次都是新引用；
@@ -209,6 +232,7 @@ export default function ExamRecordsPanel({
    * 签名是字符串，内容不变时值相等——用它当"内容没变"的判据，复用同一个 Map。
    */
   const classSignature = classes.map((item) => `${item.id}:${item.gradeId}`).join(',');
+  const majorsById = useMemo(() => new Map((majors ?? []).map((major) => [major.id, major])), [majors]);
   const classIdsCache = useRef<{ signature: string; map: Map<string, string[]> }>({
     signature: '',
     map: new Map<string, string[]>(),
@@ -227,9 +251,9 @@ export default function ExamRecordsPanel({
 
   // 「考试安排」的时间窗：今天 / 明天 / 本周 / 未来两周 / 全部。
   const window = useMemo(
-    () => resolveScheduleWindow(scheduleWindow, Date.now()),
-    // 时间窗只跟档位走；重新挂载（切板块回来）也会重算一次「今天」。
-    [scheduleWindow],
+    () => resolveScheduleWindow(scheduleWindow, now),
+    // 过午夜时需要把「今天/明天」窗口滚到新的上海日历日。
+    [scheduleWindow, now],
   );
   // 日程轴与班级网格共用同一套取数与行模型（时间窗、草稿、冲突），只有呈现方式不同。
   const boardActive = preset === 'schedule' && viewMode !== 'exam';
@@ -290,6 +314,13 @@ export default function ExamRecordsPanel({
   useEffect(() => {
     void loadRecords();
   }, [loadRecords, refreshKey]);
+
+  // 编辑器保存走独立的考试快照推送链；确认成功后让当前板块、分页和筛选条件
+  // 重新取一次记录，避免继续显示保存前的 displayStatus/startAt/endAt。
+  useEffect(() => {
+    if (scheduleRevision === 0) return;
+    setRefreshKey((value) => value + 1);
+  }, [scheduleRevision]);
 
   // 记住筛选条件与几个展开状态：切板块、进编辑器再回来时，列表还在原来的口径上。
   // 分页刻意不记，回来时从第一页开始。
@@ -398,10 +429,10 @@ export default function ExamRecordsPanel({
       activePlanIdByClassId: weeklyPlanIdByClassId,
       classes,
       grades,
-      now: Date.now(),
+      now,
       daysForward: 7,
     });
-  }, [preset, weeklyPlans, weeklyPlanIdByClassId, classes, grades]);
+  }, [preset, weeklyPlans, weeklyPlanIdByClassId, classes, grades, now]);
 
   // 日程轴的数据来源：本地快照展开出「大型考试 / 快速发布 / 周测」场次（周测已按时间结构合并，
   // 被大型考试按冲突策略暂停的实例单独返回），再和记录层的生命周期状态、草稿合流成一条轴。
@@ -449,16 +480,16 @@ export default function ExamRecordsPanel({
             records,
             grades,
             classes,
-            now: Date.now(),
+            now,
             rowFilter: makeScheduleRowFilter({ query, gradeId, classGradeIds }),
           })
         : null,
-    [boardActive, collected, drafts, records, grades, classes, query, gradeId, classGradeIds],
+    [boardActive, collected, drafts, records, grades, classes, query, gradeId, classGradeIds, now],
   );
 
   /** 班级网格的日期列（最多 7 天）与列头文案。 */
   const gridDays = useMemo(() => (boardActive ? scheduleWindowDays(window, 7) : []), [boardActive, window]);
-  const gridDayLabels = useMemo(() => gridDays.map((day) => scheduleDayLabel(day, Date.now())), [gridDays]);
+  const gridDayLabels = useMemo(() => gridDays.map((day) => scheduleDayLabel(day, now)), [gridDays, now]);
   const classGrid = useMemo(
     () => (board && gridDays.length ? buildClassGrid({ rows: board.rows, classes, grades, days: gridDays }) : []),
     [board, gridDays, classes, grades],
@@ -484,10 +515,10 @@ export default function ExamRecordsPanel({
 
   // 分组：安排页是 今天/明天/本周内/更晚，历史页是自然月（当前考试不分段）。
   const groupedRows = useMemo(() => {
-    if (preset === 'schedule') return groupScheduleEntries(records, Date.now());
+    if (preset === 'schedule') return groupScheduleEntries(records, now);
     if (preset === 'history') return groupHistoryEntries(records);
     return null;
-  }, [preset, records]);
+  }, [preset, records, now]);
 
   // 分组默认只展开最近两组（安排页=今天/明天，历史页=最近一个月），其余折叠；
   // 用户折叠过就按用户记的来（和筛选条件一样存在内存里，切板块回来还在）。
@@ -592,8 +623,9 @@ export default function ExamRecordsPanel({
         <strong title={record.name || record.id}>{record.name || '未命名考试'}</strong>
         <code>{record.id}</code>
       </div>
-      <span className={`exam-records-status is-${record.displayStatus}`} role="cell">
-        {EXAM_RECORD_STATUS_LABELS[record.displayStatus]}
+      <span className={`exam-records-status is-${displayStatusOf(record, majorsById.get(record.id), now)}`} role="cell">
+        {EXAM_RECORD_STATUS_LABELS[displayStatusOf(record, majorsById.get(record.id), now)]}
+        {record.pausedAt != null && <small className="exam-records-status__note">已暂停</small>}
       </span>
       <span className="exam-records-scope" role="cell">
         {scopeLabel(record, grades, classes)}
@@ -606,7 +638,7 @@ export default function ExamRecordsPanel({
           EXAM_RECORD_TIME_CHANGE_ACTIONS.includes(
             record.lastOperation.action as (typeof EXAM_RECORD_TIME_CHANGE_ACTIONS)[number],
           ) &&
-          Date.now() - record.lastOperation.at < 24 * 60 * 60 * 1000 && (
+          now - record.lastOperation.at < 24 * 60 * 60 * 1000 && (
             <em className="exam-records-time-note" title={record.lastOperation.reason || '时间已调整'}>
               时间已调整
             </em>
@@ -697,7 +729,7 @@ export default function ExamRecordsPanel({
                 setPage(1);
               }}
             >
-              {resolveScheduleWindow(key, Date.now()).label}
+              {resolveScheduleWindow(key, now).label}
             </button>
           ))}
         </nav>
@@ -972,7 +1004,10 @@ export default function ExamRecordsPanel({
                               <li key={item.id}>
                                 <strong>{item.name || item.id}</strong>
                                 <span>{examTimeRange(item.startAt, item.endAt)}</span>
-                                <em>{EXAM_RECORD_STATUS_LABELS[item.displayStatus]}</em>
+                                <em>
+                                  {EXAM_RECORD_STATUS_LABELS[displayStatusOf(item, majorsById.get(item.id), now)]}
+                                  {item.pausedAt != null ? ' · 已暂停' : ''}
+                                </em>
                               </li>
                             ))}
                           </ul>
@@ -1039,7 +1074,7 @@ export default function ExamRecordsPanel({
               <ul className="exam-records-weekly__list">
                 {(weeklyExpanded ? weeklyRows : weeklyRows.slice(0, 5)).map((row) => (
                   <li key={row.key}>
-                    <span className="exam-records-weekly__when">{weeklyDateLabel(row.dateKey, Date.now())}</span>
+                    <span className="exam-records-weekly__when">{weeklyDateLabel(row.dateKey, now)}</span>
                     <strong>{row.name}</strong>
                     <span>
                       {row.gradeName}
