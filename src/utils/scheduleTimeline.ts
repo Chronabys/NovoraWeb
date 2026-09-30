@@ -65,6 +65,10 @@ export type ScheduleConflict = {
   key: string;
   aKey: string;
   bKey: string;
+  /** 发生冲突的两场考试名称，供横幅直接说明冲突对象。 */
+  examNames: [string, string];
+  /** 当前尚未提供冲突处理动作，因此明确标记为未处理。 */
+  status: 'unhandled';
   /** 冲突发生在哪一天（上海日历日）。 */
   dateKey: string;
   /** 重叠时长（毫秒），用于挑「更严重」的那条做提示。 */
@@ -347,6 +351,8 @@ export function findScheduleConflicts(rows: readonly ScheduleRow[]): ScheduleCon
         key: `${left.key}~${right.key}`,
         aKey: left.key,
         bKey: right.key,
+        examNames: [left.title, right.title],
+        status: 'unhandled',
         dateKey: getShanghaiDateKey(startAt),
         overlapMs: endAt - startAt,
         scopeLabel: left.scopeLabel === right.scopeLabel ? left.scopeLabel : `${left.scopeLabel} / ${right.scopeLabel}`,
@@ -402,7 +408,14 @@ export function buildScheduleBoard(input: BuildScheduleBoardInput): {
     .map((record) => ({
       key: `unscheduled|${record.id}`,
       kind: record.source === 'quick' ? 'quick' : 'major',
-      status: statusFromRecord(record.displayStatus, record.startAt, record.endAt, record.pausedAt, record.pausedMs, now),
+      status: statusFromRecord(
+        record.displayStatus,
+        record.startAt,
+        record.endAt,
+        record.pausedAt,
+        record.pausedMs,
+        now,
+      ),
       recordId: record.id,
       planId: null,
       title: record.name,

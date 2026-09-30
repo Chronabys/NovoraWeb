@@ -268,6 +268,8 @@ test('冲突：同一天、范围有交集、时间重叠才算', () => {
       ['b', 'd'],
     ],
   );
+  assert.deepEqual(conflicts[0]?.examNames, ['初二月考', '初二数学周测']);
+  assert.equal(conflicts[0]?.status, 'unhandled');
 });
 
 test('按日分组：今天/明天/日期，未排期永远最后', () => {
