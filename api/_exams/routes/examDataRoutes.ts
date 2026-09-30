@@ -11,6 +11,7 @@ import {
 } from '../db.js';
 import { examPayload } from '../payload.js';
 import { examEtag, isCurrentSnapshotRequest, matchesIfNoneMatch } from '../../../src/shared/examContracts.js';
+import { examSnapshotDelta, parseSinceRevisions } from '../../../src/shared/examSnapshotDelta.js';
 import {
   EXAM_REVISION_DOMAINS,
   EXAM_REVISION_DOMAIN_FIELDS,
@@ -156,6 +157,24 @@ export async function handleExamDataGet(req: VercelRequest, res: VercelResponse,
     updated_at: 0,
   };
   const payload = examPayload(row);
+  // 域级增量读：客户端带着「我手上各域的修订号」来时，只回真的变了的域。
+  // 整份快照 ~135KB，改个提醒设置也要重下整份（线上实测 1.17s），这里用写路径同一把尺子收敛。
+  const since = parseSinceRevisions(req.query?.since);
+  if (since) {
+    const delta = examSnapshotDelta(payload as unknown as Record<string, unknown>, since);
+    res.setHeader('Server-Timing', `app;dur=${Date.now() - startedAt}`);
+    res.setHeader('Content-Type', 'application/json');
+    res.status(200).send(
+      JSON.stringify({
+        ok: true,
+        partial: true,
+        ...delta.fields,
+        revisions: delta.revisions,
+        updatedAt: delta.updatedAt,
+      }),
+    );
+    return;
+  }
   const body = JSON.stringify(payload);
   res.setHeader('Server-Timing', `app;dur=${Date.now() - startedAt}`);
   res.setHeader('Content-Type', 'application/json');
@@ -196,10 +215,28 @@ export async function handleExamDataPost(req: VercelRequest, res: VercelResponse
     res.status(400).json({ ok: false, error: 'request must carry at least one exam data field' });
     return;
   }
-  if (Object.prototype.hasOwnProperty.call(requestBody, 'items') && !Array.isArray(requestBody.items)) {
-    res.status(400).json({ ok: false, error: 'items must be an array' });
-    return;
+  // A malformed partial save must not turn a missing or invalid field into empty school data.
+  const hasField = (field: string) => Object.prototype.hasOwnProperty.call(requestBody, field);
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    !!value && typeof value === 'object' && !Array.isArray(value);
+  const invalidField = (field: string, valid: (value: unknown) => boolean, message: string): boolean => {
+    if (!hasField(field) || requestBody[field] === undefined || valid(requestBody[field])) return false;
+    res.status(400).json({ ok: false, error: `${field} ${message}` });
+    return true;
+  };
+  if (invalidField('items', Array.isArray, 'must be an array')) return;
+  if (invalidField('majors', Array.isArray, 'must be an array')) return;
+  if (invalidField('title', (value) => typeof value === 'string', 'must be a string')) return;
+  if (invalidField('activeMajorId', (value) => typeof value === 'string', 'must be a string')) return;
+  if (invalidField('weeklyPlans', Array.isArray, 'must be an array')) return;
+  if (invalidField('grades', Array.isArray, 'must be an array')) return;
+  if (invalidField('classes', Array.isArray, 'must be an array')) return;
+  if (invalidField('scheduleMode', (value) => typeof value === 'string', 'must be a string')) return;
+  if (invalidField('initialization', isRecord, 'must be an object')) return;
+  for (const field of ['alerts', 'activeWeeklyPlanIdByClassId', 'weeklyConflictPolicy', 'designPolicy']) {
+    if (invalidField(field, (value) => value === null || isRecord(value), 'must be an object or null')) return;
   }
+  if (invalidField('activeWeeklyPlanId', (value) => value === null || typeof value === 'string', 'must be a string or null')) return;
   // 快速考试走本地优先保存管道，没有显式动作；这里留下旧 majors 以便保存后补记生命周期转换。
   let priorMajors: unknown = null;
   /** 本次保存中被「归档只读」挡下的考试 id（仅用于回传提示，不影响写入）。 */
